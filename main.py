@@ -32,6 +32,7 @@ from networks.DLinkNet101 import *
 from networks.LinkNet34 import *
 from networks.UNet import *
 from networks.TransUNet import TransUNetTrainer, create_dataloaders
+from networks.Segment import *
 
 path_training = 'training/'
 path_testing = 'test_set_images/'
@@ -100,7 +101,15 @@ models = [
     # LinkNet34().to(device), # 80
     # LinkNetB7().to(device), # 35
     # UNet().to(device) # 11
-    TransUNetTrainer(img_size=training_resize, num_classes=2, config_name="ViT-B_16").to(device)
+    # TransUNetTrainer(img_size=training_resize, num_classes=2, config_name="ViT-B_16").to(device),
+    # smp.Unet(
+    #     encoder_name="resnet34",        # choose encoder, e.g. mobilenet_v2 or efficientnet-b7
+    #     encoder_weights="imagenet",     # use `imagenet` pre-trained weights for encoder initialization
+    #     in_channels=3,                  # model input channels (1 for gray-scale images, 3 for RGB, etc.)
+    #     classes=2,                      # model output channels (number of classes in your dataset)
+    #     # activation="softmax"            # final activation function
+    # ).to(device)
+    Segment("FPN", "resnet34", in_channels=3, out_classes=1).to(device)
 ]
 
 
