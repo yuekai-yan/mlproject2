@@ -7,6 +7,7 @@ import pytorch_lightning as pl
 from torch.optim import lr_scheduler
 import segmentation_models_pytorch as smp
 from torch.utils.data import DataLoader
+from loss_function import *
 
 
 
@@ -26,7 +27,8 @@ class Segment(pl.LightningModule):
         self.register_buffer("mean", torch.tensor(params["mean"]).view(1, 3, 1, 1))
 
         # for image segmentation dice loss could be the best first choice
-        self.loss_fn = smp.losses.DiceLoss(smp.losses.BINARY_MODE, from_logits=True)
+        # self.loss_fn = smp.losses.DiceLoss(smp.losses.BINARY_MODE, from_logits=True)
+        self.loss_fn = smp.losses.SoftBCEWithLogitsLoss()
 
         # initialize step metics
         self.training_step_outputs = []
@@ -57,6 +59,7 @@ class Segment(pl.LightningModule):
 
         # Compute loss
         loss = self.loss_fn(logits_mask, labels)
+        print(f'loss={loss}')
 
         # Convert logits to probabilities and apply threshold
         prob_mask = logits_mask.sigmoid()
@@ -77,30 +80,36 @@ class Segment(pl.LightningModule):
 
 
     def shared_epoch_end(self, outputs, stage):
-        # aggregate step metics
-        tp = torch.cat([x["tp"] for x in outputs])
-        fp = torch.cat([x["fp"] for x in outputs])
-        fn = torch.cat([x["fn"] for x in outputs])
-        tn = torch.cat([x["tn"] for x in outputs])
+        # # aggregate step metics
+        # tp = torch.cat([x["tp"] for x in outputs])
+        # fp = torch.cat([x["fp"] for x in outputs])
+        # fn = torch.cat([x["fn"] for x in outputs])
+        # tn = torch.cat([x["tn"] for x in outputs])
 
-        # per image IoU means that we first calculate IoU score for each image
-        # and then compute mean over these scores
-        per_image_iou = smp.metrics.iou_score(
-            tp, fp, fn, tn, reduction="micro-imagewise"
-        )
+        # # per image IoU means that we first calculate IoU score for each image
+        # # and then compute mean over these scores
+        # per_image_iou = smp.metrics.iou_score(
+        #     tp, fp, fn, tn, reduction="micro-imagewise"
+        # )
 
-        # dataset IoU means that we aggregate intersection and union over whole dataset
-        # and then compute IoU score. The difference between dataset_iou and per_image_iou scores
-        # in this particular case will not be much, however for dataset
-        # with "empty" images (images without target class) a large gap could be observed.
-        # Empty images influence a lot on per_image_iou and much less on dataset_iou.
-        dataset_iou = smp.metrics.iou_score(tp, fp, fn, tn, reduction="micro")
-        metrics = {
-            f"{stage}_per_image_iou": per_image_iou,
-            f"{stage}_dataset_iou": dataset_iou,
-        }
+        # # dataset IoU means that we aggregate intersection and union over whole dataset
+        # # and then compute IoU score. The difference between dataset_iou and per_image_iou scores
+        # # in this particular case will not be much, however for dataset
+        # # with "empty" images (images without target class) a large gap could be observed.
+        # # Empty images influence a lot on per_image_iou and much less on dataset_iou.
+        # dataset_iou = smp.metrics.iou_score(tp, fp, fn, tn, reduction="micro")
+        # metrics = {
+        #     f"{stage}_per_image_iou": per_image_iou,
+        #     f"{stage}_dataset_iou": dataset_iou,
+        # }
 
-        self.log_dict(metrics, prog_bar=True)
+        # self.log_dict(metrics, prog_bar=True)
+
+        # Print metrics to console
+        # print(f"Epoch {stage} Metrics:")
+        # for k, v in metrics.items():
+        #     print(f"{k}: {v}")
+       pass
 
     def training_step(self, batch, batch_idx):
         images, labels = batch
@@ -108,11 +117,32 @@ class Segment(pl.LightningModule):
         # append the metics of each step to the
         self.training_step_outputs.append(train_loss_info)
         return train_loss_info
+    
+    def on_train_epoch_start(self):
+        """Override to skip epochs based on start_epoch."""
+        if hasattr(self, 'start_epoch') and self.current_epoch < self.start_epoch:
+            print(f"Skipping epoch {self.current_epoch}, starting from epoch {self.start_epoch}.")
+            self.trainer.should_stop = True
 
     def on_train_epoch_end(self):
         self.shared_epoch_end(self.training_step_outputs, "train")
         # empty set output list
         self.training_step_outputs.clear()
+
+        # save model
+        path_model = os.path.dirname(__file__)+'/../models/'
+        checkpoint_path = f"checkpoint_epoch_{self.current_epoch}.pth"
+        checkpoint_path = os.path.join(path_model, f'model_epoch_{self.current_epoch + 1}_{type(self.model).__name__}.pth')
+        # torch.save(self.state_dict(), checkpoint_path)
+        torch.save({
+                'epoch': self.current_epoch + 1,
+                'model_state_dict': self.state_dict(),
+                # 'optimizer_state_dict': self.optimizer.state_dict(),
+                # 'loss': self.loss_func,
+                'optimizer_state_dict': self.trainer.optimizers[0].state_dict(),  
+                'loss': self.trainer.callback_metrics.get('train_loss', None),  
+                }, checkpoint_path)
+        print(f"Model checkpoint saved to {checkpoint_path}")
         return
 
     def validation_step(self, batch, batch_idx):
@@ -127,10 +157,17 @@ class Segment(pl.LightningModule):
         return
 
     def test_step(self, batch, batch_idx):
-        images, labels = batch
-        test_loss_info = self.shared_step(images, labels, "test")
-        self.test_step_outputs.append(test_loss_info)
-        return test_loss_info
+        images = batch
+        images = (images / 255.0 - self.mean) / self.std
+
+        # Forward pass through the model
+        logits_mask = self.forward(images)
+
+        # # Convert logits to probabilities and apply threshold
+        prob_mask = logits_mask.sigmoid()
+        pred_mask = (prob_mask > 0.5).float()
+
+        return pred_mask
 
     def on_test_epoch_end(self):
         self.shared_epoch_end(self.test_step_outputs, "test")
@@ -154,3 +191,16 @@ class Segment(pl.LightningModule):
             },
         }
         return
+    
+    def load_checkpoint(self, checkpoint_path, start_epoch=None):
+        """
+        Load a checkpoint and optionally set the start epoch.
+        """
+        checkpoint = torch.load(
+            checkpoint_path,
+            map_location=torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        )
+        # print(checkpoint.keys())
+        self.load_state_dict(checkpoint['model_state_dict'])
+        self.start_epoch = start_epoch or checkpoint.get('epoch', 0)
+        print(f"Model parameters loaded from {checkpoint_path}. Starting from epoch {self.start_epoch}.")

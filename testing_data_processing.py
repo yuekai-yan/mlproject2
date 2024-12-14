@@ -69,7 +69,7 @@ def mask_to_submission(output, index):
     return mask_submission
 
 
-def submission_creating(model, path_testing='test_set_images/', training_resize=384, testing_resize=584, cuda_available=True):
+def submission_creating(model, path_testing='test_set_images/', training_resize=384, testing_resize=584, cuda_available=True, change=False):
     """
     submission_creating - Load and generate the resized training dataset and validation dataset.
     Args:
@@ -95,10 +95,15 @@ def submission_creating(model, path_testing='test_set_images/', training_resize=
         input_patches = torch.from_numpy(input_patches).float()
 
         # Predict the mask of the four patches
-        if cuda_available:
-            output_patches = model(input_patches.cuda()).detach().cpu().numpy()
+        if change is True:
+            output_patches = model.test_step(input_patches, index)
         else:
-            output_patches = model(input_patches).detach().numpy()
+            output_patches = model(input_patches)
+        
+        if change is True:
+            output_patches = output_patches.detach().cpu().numpy()
+        else:
+            output_patches = output_patches.detach().numpy()
         
         # Merge the four masks into one resized mask
         output = testing_patch_assembling(output_patches, training_resize, testing_resize)[0, :, :]

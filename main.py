@@ -33,6 +33,7 @@ from networks.LinkNet34 import *
 from networks.UNet import *
 from networks.TransUNet import TransUNetTrainer, create_dataloaders
 from networks.Segment import *
+from networks.FPN import *
 
 path_training = 'training/'
 path_testing = 'test_set_images/'
@@ -99,7 +100,7 @@ models = [
     # DLinkNet50().to(device), # 1
     # DLinkNet101().to(device), # scratch
     # LinkNet34().to(device), # 80
-    # LinkNetB7().to(device), # 35
+    # LinkNetB7().to(device), # 75
     # UNet().to(device) # 11
     # TransUNetTrainer(img_size=training_resize, num_classes=2, config_name="ViT-B_16").to(device),
     # smp.Unet(
@@ -110,6 +111,8 @@ models = [
     #     # activation="softmax"            # final activation function
     # ).to(device)
     Segment("FPN", "resnet34", in_channels=3, out_classes=1).to(device)
+    # Segment("UNET", "resnet34", in_channels=3, out_classes=1).to(device)
+    # FPN([3,4,6,3]).to(device)
 ]
 
 
@@ -159,58 +162,85 @@ def get_max_epoch_model_file(path_model, model_name):
 
 
 for model in models:
-    model_name = type(model).__name__
+    model_name = "FPN"
+    # model_name = type(model).__name__
+    # print(f'model_name={model_name}')
     start_max_epoch, best_model_file = get_max_epoch_model_file(path_model, model_name)
+    print(f'=====start_max_epoch={start_max_epoch}, best_model_file={best_model_file}')
+
+    batch_size=16
+    epochs=80
+
+    if(model_name=="FPN"):
+        images_training = torch.Tensor(images_augmented)
+        labels_training = torch.Tensor(labels_augmented)
+        training_set = TensorDataset(images_augmented, labels_augmented)
+        training_generator = DataLoader(training_set, batch_size=batch_size, shuffle=True)
+
+        print(f'start_max_epoch={start_max_epoch}')
+        if start_max_epoch>0:
+            checkpoint_path = os.path.join(path_model, best_model_file)
+            try:
+                model.load_checkpoint(checkpoint_path, start_epoch=start_max_epoch)
+            except FileNotFoundError:
+                print(f"No checkpoint found at {checkpoint_path}, starting fresh.")
+
+        trainer = pl.Trainer(max_epochs=epochs, log_every_n_steps=1)
+
+        trainer.fit(
+            model,
+            train_dataloaders=training_generator,
+            # val_dataloaders=validation_generator
+        )
+
+        submission = submission_creating(model,
+                                        path_testing,
+                                        training_resize,
+                                        testing_resize,
+                                        cuda_available, 
+                                        change=True)
+        print(submission)
+        np.savetxt(f'submit_{model_name}_{epochs}.csv', submission, delimiter=",", fmt='%s')
+
+    else: 
+        """
+        Train Each Model in the Ensemble
+        """
+        # if best_model_file:
+        #     checkpoint_path = os.path.join(path_model, best_model_file)
+        #     checkpoint = torch.load(checkpoint_path)
+        #     model.load_state_dict(checkpoint['model_state_dict'])
+        #     print(f"Loaded weights for {model_name} from epoch {start_max_epoch}")
+        # else:
+        #     print(f"No pre-trained weights found for {model_name}. Training from scratch.")
     
-    if best_model_file:
-        checkpoint_path = os.path.join(path_model, best_model_file)
-        checkpoint = torch.load(checkpoint_path)
-        model.load_state_dict(checkpoint['model_state_dict'])
-        print(f"Loaded weights for {model_name} from epoch {start_max_epoch}")
-    else:
-        print(f"No pre-trained weights found for {model_name}. Training from scratch.")
+        print(f"\nTraining model {type(model).__name__}")
 
-
-    """
-    Train Each Model in the Ensemble
-    """
-    print(f"\nTraining model {type(model).__name__}")
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5, verbose=True)
-
-
-    train(model,
+        optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5, verbose=True)
+        
+        train(model,
             images_augmented,
             labels_augmented,
             images_validation,
             labels_validation,
             loss_func=BCEIoULoss(),  # BCEIoULoss(), DiceBCELoss(), nn.BCELoss()
-            batch_size=16,
+            batch_size=batch_size,
             learning_rate=1e-3,
             start_epoch=start_max_epoch,
-            epochs=80,
+            epochs=epochs,
             model_validation=model_validation,
             cuda_available=cuda_available,
             path_model=path_model)
 
-    """
-    Process the Testing Dataset and Create the Submission File
-    """
-    submission = submission_creating(model,
-                                    path_testing,
-                                    training_resize,
-                                    testing_resize,
-                                    cuda_available)
-    print(submission)
+        """
+        Process the Testing Dataset and Create the Submission File
+        """
+        submission = submission_creating(model,
+                                        path_testing,
+                                        training_resize,
+                                        testing_resize,
+                                        cuda_available)
+        print(submission)
+        np.savetxt(f'submit_{model_name}_{start_max_epoch}.csv', submission, delimiter=",", fmt='%s')
 
-
-    np.savetxt(f'submit_{model_name}_{start_max_epoch}.csv', submission, delimiter=",", fmt='%s')
-
-
-# submission = submission_creating_ensemble(models,
-#                                     path_testing,
-#                                     training_resize,
-#                                     testing_resize,
-#                                     cuda_available)
-
-# np.savetxt(f'submit_ensemble_{start_max_epoch}.csv', submission, delimiter=",", fmt='%s')
